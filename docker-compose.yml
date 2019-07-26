@@ -1,0 +1,6 @@
+version: '3'
+services:
+  ignite:
+    image: apacheignite/ignite:2.7.0
+    ports:
+      - 10800:10800
