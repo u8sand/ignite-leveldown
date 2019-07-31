@@ -11,9 +11,10 @@ const CacheConfiguration = IgniteClient.CacheConfiguration
 const SqlFieldsQuery = IgniteClient.SqlFieldsQuery
 
 interface IgniteDownOptions {
+  // The location string provided to the leveldown instance
   location?: string
+  // The uri for accessing the ignite cluster
   uri: string
-  cache: string
 }
 
 export class IgniteDown<K extends string, V extends {}> implements EasierLevelDOWN<K, V, IgniteDownOptions> {
@@ -42,7 +43,7 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     await this._igniteClient.connect(new IgniteClientConfiguration(this._opts.uri))
 
     this._igniteCache = await this._igniteClient.getOrCreateCache(
-      this._opts.cache,
+      this._opts.location,
       new CacheConfiguration().setSqlSchema('PUBLIC')
     )
 

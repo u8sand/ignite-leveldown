@@ -4,5 +4,5 @@ import test = require('tape')
 
 suite({
   test,
-  factory: ignitedown({ uri: "127.0.0.1:10800", cache: "test" }),
+  factory: ignitedown({ uri: "127.0.0.1:10800" }),
 })
