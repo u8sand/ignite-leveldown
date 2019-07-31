@@ -190,7 +190,7 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
         select k, v
         from kvstore
         ${wheres ? (
-            `where ${wheres.join('and')}`
+            `where ${wheres.join(' and ')}`
           ) : ''}
         order by k ${
           opts.reverse === true ? (
