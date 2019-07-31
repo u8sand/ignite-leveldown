@@ -15,6 +15,10 @@ interface IgniteDownOptions {
   location?: string
   // The uri for accessing the ignite cluster
   uri: string
+  // The maximum size for a key field
+  key_size: number
+  // The maximum size for a value field
+  value_size: number
 }
 
 export class IgniteDown<K extends string, V extends {}> implements EasierLevelDOWN<K, V, IgniteDownOptions> {
@@ -54,8 +58,8 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     await (await this._igniteCache.query(
       new SqlFieldsQuery(`
         CREATE TABLE IF NOT EXISTS kvstore (
-          k CHAR(256),
-          v CHAR(1024),
+          k CHAR(${this._opts.key_size}),
+          v CHAR(${this._opts.value_size}),
           PRIMARY KEY (k)
         ) WITH "template=partitioned, backups=1, affinityKey=k, CACHE_NAME=kvstore";
       `)
