@@ -1,8 +1,9 @@
 /// <reference types="easier-abstract-leveldown" />
 
-import IgniteClient = require('apache-ignite-client')
-import exposeLevelDOWN, { EasierLevelDOWNIteratorOpts, EasierLevelDOWNBatchOpts, EasierLevelDOWN } from 'easier-abstract-leveldown'
 import { KeyVal } from 'easier-abstract-leveldown/dist/types'
+import { URL } from 'url'
+import exposeLevelDOWN, { EasierLevelDOWNIteratorOpts, EasierLevelDOWNBatchOpts, EasierLevelDOWN } from 'easier-abstract-leveldown'
+import IgniteClient = require('apache-ignite-client')
 
 const debug = require('debug')('ignite-leveldown')
 
@@ -12,9 +13,8 @@ const SqlFieldsQuery = IgniteClient.SqlFieldsQuery
 
 interface IgniteDownOptions {
   // The location string provided to the leveldown instance
+  //  should be prefixed by the uri to access the ignite cluster i.e. ignite://127.0.0.1:10800/cache_name
   location?: string
-  // The uri for accessing the ignite cluster
-  uri: string
   // The maximum size for a key field
   key_size: number
   // The maximum size for a value field
@@ -41,13 +41,22 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     }
   }
 
-  async open() {
+  async open(opts: IgniteDownOptions) {
+    // Add location to the given default location i.e. operates like a prefix
+    if (opts.location !== undefined) {
+      this._opts.location += opts.location
+    }
+
+    const url = new URL(this._opts.location)
+    const uri = `${url.host}`
+    const cache = `${url.pathname.slice(1)}`
+
     this._igniteClient = new IgniteClient(this._onStateChange)
 
-    await this._igniteClient.connect(new IgniteClientConfiguration(this._opts.uri))
+    await this._igniteClient.connect(new IgniteClientConfiguration(uri))
 
     this._igniteCache = await this._igniteClient.getOrCreateCache(
-      this._opts.location,
+      cache,
       new CacheConfiguration().setSqlSchema('PUBLIC')
     )
 
@@ -61,7 +70,7 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
           k CHAR(${this._opts.key_size}),
           v CHAR(${this._opts.value_size}),
           PRIMARY KEY (k)
-        ) WITH "template=partitioned, backups=1, affinityKey=k, CACHE_NAME=kvstore";
+        ) WITH "template=partitioned, backups=1, affinityKey=k, CACHE_NAME=${cache}_kvstore";
       `)
     )).getAll()
 
