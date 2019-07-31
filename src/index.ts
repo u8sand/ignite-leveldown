@@ -96,20 +96,11 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
       throw new Error('IgniteCache was not initialized')
     }
 
-    const results = (await (await this._igniteCache.query(
+    (await (await this._igniteCache.query(
       new SqlFieldsQuery(`
-        update kvstore set v = ? where k = ?;
+        merge into kvstore set v = ? where k = ?;
       `).setArgs(v, k)
-    )).getAll())[0][0]
-
-    // If nothing was updated, it doesn't yet exist
-    if (results === 0) {
-      await (await this._igniteCache.query(
-        new SqlFieldsQuery(`
-          insert into kvstore (k, v) values (?, ?);
-        `).setArgs(k, v)
-      )).getAll()
-    }
+    )).getAll())
   }
 
   async del(k: K) {
@@ -135,7 +126,6 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
 
     for (const opt of opts) {
       if (opt.type == 'put') {
-        toDel.push({ key: opt.key })
         toPut.push({ key: opt.key, value: opt.value })
       } else if (opt.type === 'del') {
         toDel.push({ key: opt.key })
@@ -152,7 +142,7 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     if (toPut) {
       await (await this._igniteCache.query(
         new SqlFieldsQuery(`
-          insert into kvstore (k, v)
+          merge into kvstore (k, v)
           values ${toPut.map(() => '(?, ?)').join(',')};
         `).setArgs(...toPut.reduce(
           (args, { key, value }) => [...args, key, value], []
