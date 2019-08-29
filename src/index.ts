@@ -21,6 +21,14 @@ interface IgniteDownOptions {
   value_size: number
 }
 
+function btoa(v: any) {
+  return Buffer.from(v).toString('base64')
+}
+
+function atob(v: any) {
+  return Buffer.from(v, 'base64').toString()
+}
+
 export class IgniteDown<K extends string, V extends {}> implements EasierLevelDOWN<K, V, IgniteDownOptions> {
   _opts: IgniteDownOptions
   _igniteClient: IgniteClient
@@ -39,6 +47,11 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
         debug(reason)
       }
     }
+  }
+
+  _sqlFieldsQuery = (query, ...args) => {
+    debug(`${this._opts.location}: sqlFieldsQuery('${query}', ...${args})`)
+    return new SqlFieldsQuery(query).setArgs(...args)
   }
 
   async open(opts: IgniteDownOptions) {
@@ -65,7 +78,7 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     }
 
     await (await this._igniteCache.query(
-      new SqlFieldsQuery(`
+      this._sqlFieldsQuery(`
         CREATE TABLE IF NOT EXISTS kvstore (
           k CHAR(${this._opts.key_size}),
           v CHAR(${this._opts.value_size}),
@@ -75,7 +88,7 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     )).getAll()
 
     await (await this._igniteCache.query(
-      new SqlFieldsQuery(`
+      this._sqlFieldsQuery(`
         CREATE INDEX IF NOT EXISTS kvstore_k ON kvstore (k)
       `)
     )).getAll()
@@ -91,18 +104,18 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     }
 
     const value = (await (await this._igniteCache.query(
-      new SqlFieldsQuery(`
+      this._sqlFieldsQuery(`
         select v
         from kvstore
         where k = ?;
-      `).setArgs(k)
+      `, btoa(k))
     )).getAll())
 
     if (value.length === 0) {
       throw new Error('NotFound')
     }
 
-    return value[0][0]
+    return atob(value[0][0]) as any
   }
 
   async put(k: K, v: V) {
@@ -111,9 +124,9 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     }
 
     (await (await this._igniteCache.query(
-      new SqlFieldsQuery(`
+      this._sqlFieldsQuery(`
         merge into kvstore set v = ? where k = ?;
-      `).setArgs(v, k)
+      `, btoa(v as any), btoa(k))
     )).getAll())
   }
 
@@ -123,10 +136,10 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     }
 
     await (await this._igniteCache.query(
-      new SqlFieldsQuery(`
+      this._sqlFieldsQuery(`
         delete from kvstore
         where k = ?;
-      `).setArgs(k)
+      `, btoa(k))
     )).getAll()
   }
 
@@ -145,22 +158,22 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
         toDel.push({ key: opt.key })
       }
     }
-    if (toDel) {
+    if (toDel.length > 0) {
       await (await this._igniteCache.query(
-        new SqlFieldsQuery(`
+        this._sqlFieldsQuery(`
           delete from kvstore
           where k in (${toDel.map(() => '?').join(',')});
-        `).setArgs(...toDel.map(({ key }) => key))
+        `, ...toDel.map(({ key }) => key).map(btoa))
       )).getAll()
     }
-    if (toPut) {
+    if (toPut.length > 0) {
       await (await this._igniteCache.query(
-        new SqlFieldsQuery(`
+        this._sqlFieldsQuery(`
           merge into kvstore (k, v)
           values ${toPut.map(() => '(?, ?)').join(',')};
-        `).setArgs(...toPut.reduce(
+        `, ...toPut.reduce(
           (args, { key, value }) => [...args, key, value], []
-        ))
+        ).map(btoa))
       )).getAll()
     }
   }
@@ -190,7 +203,7 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
     }
 
     const cursor = await this._igniteCache.query(
-      new SqlFieldsQuery(`
+      this._sqlFieldsQuery(`
         select k, v
         from kvstore
         ${wheres ? (
@@ -203,11 +216,11 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
             `asc`
           )
         };
-      `).setArgs(...args)
+      `, ...args.map(btoa))
     )
 
     for (const [key, value] of cursor) {
-      yield { key, value }
+      yield { key: atob(key), value: atob(value) } as any
     }
   }
 }
