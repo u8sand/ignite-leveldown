@@ -22,39 +22,69 @@ interface IgniteDownOptions {
 }
 
 function btoa(v: any) {
-  return Buffer.from(v).toString('base64')
+  return v+''
+  // return Buffer.from(v).toString('base64')
 }
 
 function atob(v: any) {
-  return Buffer.from(v, 'base64').toString()
+  return v+''
+  // return Buffer.from(v, 'base64').toString()
 }
 
 export class IgniteDown<K extends string, V extends {}> implements EasierLevelDOWN<K, V, IgniteDownOptions> {
   _opts: IgniteDownOptions
   _igniteClient: IgniteClient
   _igniteCache: any
+  _igniteState: any
 
   constructor(opts: IgniteDownOptions) {
     this._opts = opts
   }
 
   _onStateChange = (state, reason) => {
+    this._igniteState = state
     if (state === IgniteClient.STATE.CONNECTED) {
-      debug('Client is started')
+      debug(`${this._opts.location}: started:${state}`)
+    } else if (state === IgniteClient.STATE.CONNECTING) {
+      debug(`${this._opts.location}: connecting:${state}`)
     } else if (state === IgniteClient.STATE.DISCONNECTED) {
-      debug('Client is stopped')
-      if (reason) {
-        debug(reason)
-      }
+      debug(`${this._opts.location}: disconnected:${state} (${reason})`)
+    } else {
+      debug(`${this._opts.location}: unknown:${state} (${reason})`)
     }
   }
 
-  _sqlFieldsQuery = (query, ...args) => {
-    debug(`${this._opts.location}: sqlFieldsQuery('${query}', ...${args})`)
-    return new SqlFieldsQuery(query).setArgs(...args)
+  _waitForConnection = async () => {
+    do {
+      await new Promise((resolve, reject) => setTimeout(resolve, 100))
+    } while (this._igniteState !== IgniteClient.STATE.CONNECTED)
+  }
+
+  _sqlFieldsQuery = async (query, ...args) => {
+    let retries = 0
+    let err
+    while (retries < 3) {
+      await this._waitForConnection()
+      try {
+        if (args) {
+          debug(`${this._opts.location}: sqlFieldsQuery('${query}', ...${args})`)
+          return await this._igniteCache.query(new SqlFieldsQuery(query).setArgs(...args))
+        } else {
+          debug(`${this._opts.location}: sqlFieldsQuery('${query}')`)
+          return await this._igniteCache.query(new SqlFieldsQuery(query))
+        }
+      } catch (e) {
+        err = e
+        debug(`${this._opts.location}: ${e}, retry ${retries}`)
+        retries += 1
+      }
+    }
+    throw err
   }
 
   async open(opts: IgniteDownOptions) {
+    if (this._igniteClient !== undefined) { return }
+
     // Add location to the given default location i.e. operates like a prefix
     if (opts.location !== undefined) {
       this._opts.location += opts.location
@@ -70,28 +100,27 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
 
     this._igniteCache = await this._igniteClient.getOrCreateCache(
       cache,
-      new CacheConfiguration().setSqlSchema('PUBLIC')
+      new CacheConfiguration()
+        .setSqlSchema('PUBLIC')
     )
 
     if (this._igniteCache === undefined) {
       throw new Error('IgniteCache could not be initialized')
     }
 
-    await (await this._igniteCache.query(
-      this._sqlFieldsQuery(`
+    await (await this._sqlFieldsQuery(`
         CREATE TABLE IF NOT EXISTS kvstore (
           k CHAR(${this._opts.key_size}),
           v CHAR(${this._opts.value_size}),
           PRIMARY KEY (k)
-        ) WITH "template=partitioned, backups=1, affinityKey=k, CACHE_NAME=${cache}_kvstore";
+        ) WITH "template=partitioned, backups=0, affinityKey=k, CACHE_NAME=${cache}_kvstore";
       `)
-    )).getAll()
+    ).getAll()
 
-    await (await this._igniteCache.query(
-      this._sqlFieldsQuery(`
-        CREATE INDEX IF NOT EXISTS kvstore_k ON kvstore (k)
+    await (await this._sqlFieldsQuery(`
+        CREATE INDEX IF NOT EXISTS kvstore_k ON kvstore (k);
       `)
-    )).getAll()
+    ).getAll()
   }
 
   async close() {
@@ -103,19 +132,20 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
       throw new Error('IgniteCache was not initialized')
     }
 
-    const value = (await (await this._igniteCache.query(
-      this._sqlFieldsQuery(`
-        select v
-        from kvstore
-        where k = ?;
+    const value = (await (await this._sqlFieldsQuery(`
+        SELECT v
+        FROM kvstore
+        WHERE k = ?;
       `, btoa(k))
-    )).getAll())
+    ).getAll())
 
     if (value.length === 0) {
       throw new Error('NotFound')
     }
 
-    return atob(value[0][0]) as any
+    const result = atob(value[0][0]) as any
+    debug(`=> ${result}`)
+    return result
   }
 
   async put(k: K, v: V) {
@@ -123,11 +153,11 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
       throw new Error('IgniteCache was not initialized')
     }
 
-    (await (await this._igniteCache.query(
-      this._sqlFieldsQuery(`
-        merge into kvstore set v = ? where k = ?;
-      `, btoa(v as any), btoa(k))
-    )).getAll())
+    (await (await this._sqlFieldsQuery(`
+        MERGE INTO kvstore(k, v)
+        VALUES (?, ?);
+      `, btoa(k), btoa(v as any))
+    ).getAll())
   }
 
   async del(k: K) {
@@ -135,12 +165,11 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
       throw new Error('IgniteCache was not initialized')
     }
 
-    await (await this._igniteCache.query(
-      this._sqlFieldsQuery(`
-        delete from kvstore
-        where k = ?;
+    await (await this._sqlFieldsQuery(`
+        DELETE FROM kvstore
+        WHERE k = ?;
       `, btoa(k))
-    )).getAll()
+    ).getAll()
   }
 
   async batch(opts: EasierLevelDOWNBatchOpts<K, V>) {
@@ -159,22 +188,20 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
       }
     }
     if (toDel.length > 0) {
-      await (await this._igniteCache.query(
-        this._sqlFieldsQuery(`
-          delete from kvstore
-          where k in (${toDel.map(() => '?').join(',')});
+      await (await this._sqlFieldsQuery(`
+          DELETE FROM kvstore
+          WHERE k IN (${toDel.map(() => '?').join(',')});
         `, ...toDel.map(({ key }) => key).map(btoa))
-      )).getAll()
+      ).getAll()
     }
     if (toPut.length > 0) {
-      await (await this._igniteCache.query(
-        this._sqlFieldsQuery(`
-          merge into kvstore (k, v)
-          values ${toPut.map(() => '(?, ?)').join(',')};
+      await (await this._sqlFieldsQuery(`
+          MERGE INTO kvstore (k, v)
+          VALUES ${toPut.map(() => '(?, ?)').join(',')};
         `, ...toPut.reduce(
           (args, { key, value }) => [...args, key, value], []
         ).map(btoa))
-      )).getAll()
+      ).getAll()
     }
   }
 
@@ -202,26 +229,28 @@ export class IgniteDown<K extends string, V extends {}> implements EasierLevelDO
       args.push(opts.gte)
     }
 
-    const cursor = await this._igniteCache.query(
-      this._sqlFieldsQuery(`
-        select k, v
-        from kvstore
-        ${wheres ? (
-            `where ${wheres.join(' and ')}`
-          ) : ''}
-        order by k ${
-          opts.reverse === true ? (
-            `desc`
-          ) : (
-            `asc`
-          )
-        };
-      `, ...args.map(btoa))
-    )
+    const cursor = await this._sqlFieldsQuery(`
+      SELECT k, v
+      FROM kvstore
+      ${wheres ? (
+          `WHERE ${wheres.join(' AND ')}`
+        ) : ''}
+      ORDER BY k ${
+        opts.reverse === true ? (
+          `DESC`
+        ) : (
+          `ASC`
+        )
+      };
+    `, ...args.map(btoa))
 
     for (const [key, value] of cursor) {
-      yield { key: atob(key), value: atob(value) } as any
+      const result = { key: atob(key), value: atob(value) } as any
+      debug(`=> ${result}`)
+      yield result
     }
+
+    debug('end of iterator')
   }
 }
 

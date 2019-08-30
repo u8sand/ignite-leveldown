@@ -1,6 +1,8 @@
 version: '3'
 services:
-  ignite:
+  ignite-1:
     image: apacheignite/ignite:2.7.0
     ports:
       - 10800:10800
+  # ignite-2:
+  #   image: apacheignite/ignite:2.7.0
